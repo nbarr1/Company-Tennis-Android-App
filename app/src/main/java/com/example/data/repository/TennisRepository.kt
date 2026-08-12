@@ -6,7 +6,11 @@ import com.example.firebase.FirebaseInitializer
 import com.example.scoring.*
 import com.example.scoring.Player
 import com.example.wear.WearOsManager
+import com.google.firebase.auth.FirebaseAuthException
+import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.SetOptions
+import com.google.firebase.functions.FirebaseFunctionsException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +41,10 @@ object TennisRepository {
     // Rankings Store
     private val _rankings = MutableStateFlow<List<PlayerRanking>>(emptyList())
     val rankings: StateFlow<List<PlayerRanking>> = _rankings.asStateFlow()
+
+    // Head-to-head Store
+    private val _headToHead = MutableStateFlow<List<HeadToHead>>(emptyList())
+    val headToHead: StateFlow<List<HeadToHead>> = _headToHead.asStateFlow()
 
     // Channels Store
     private val _channels = MutableStateFlow<List<Channel>>(emptyList())
@@ -86,7 +94,10 @@ object TennisRepository {
                     } else {
                         _currentUser.value = User(id = user.uid, displayName = email.substringBefore("@"), email = email, divisionId = null, tutorialDone = true)
                     }
+                    // Backfill the public "profiles" mirror for accounts created before this doc existed.
+                    _currentUser.value?.let { syncPublicProfile(it) }
                 }
+                registerFcmTokenForCurrentUser()
                 true
             } else false
         } catch (e: Exception) {
@@ -115,6 +126,8 @@ object TennisRepository {
                     firestore.collection("users").document(user.uid).set(newUser).await()
                 }
                 _currentUser.value = newUser
+                syncPublicProfile(newUser)
+                registerFcmTokenForCurrentUser()
                 true
             } else false
         } catch (e: Exception) {
@@ -123,17 +136,55 @@ object TennisRepository {
         }
     }
 
-    suspend fun loginWithGoogle(email: String = "alex.rivera@example.com", displayName: String = "Alex Rivera"): Boolean {
-        // In a real app, this uses GoogleSignInClient. Here we'll just mock it or use the same flow.
-        val auth = FirebaseInitializer.getAuth()
-        _currentUser.value = User(
-            id = auth?.currentUser?.uid ?: ("google_user_" + System.currentTimeMillis()),
-            displayName = displayName,
-            email = email,
-            divisionId = "div_metro_1",
-            tutorialDone = true
-        )
-        return true
+    private suspend fun registerFcmTokenForCurrentUser() {
+        try {
+            val uid = FirebaseInitializer.getAuth()?.currentUser?.uid ?: return
+            val firestore = FirebaseInitializer.getFirestore() ?: return
+            val token = com.google.firebase.messaging.FirebaseMessaging.getInstance().token.await()
+            firestore.collection("users").document(uid)
+                .update("fcmTokens", com.google.firebase.firestore.FieldValue.arrayUnion(token))
+                .await()
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "FCM token registration error: ${e.message}")
+        }
+    }
+
+    /** [idToken] is the Google ID token obtained via Credential Manager in AuthScreens.kt. */
+    suspend fun loginWithGoogle(idToken: String): Boolean {
+        val auth = FirebaseInitializer.getAuth() ?: return false
+        return try {
+            val credential = GoogleAuthProvider.getCredential(idToken, null)
+            auth.signInWithCredential(credential).await()
+            val firebaseUser = auth.currentUser ?: return false
+
+            val firestore = FirebaseInitializer.getFirestore()
+            if (firestore != null) {
+                val doc = firestore.collection("users").document(firebaseUser.uid).get().await()
+                val profile = doc.toObject(User::class.java)
+                if (profile != null) {
+                    _currentUser.value = profile
+                } else {
+                    val newUser = User(
+                        id = firebaseUser.uid,
+                        displayName = firebaseUser.displayName ?: firebaseUser.email?.substringBefore("@") ?: "Player",
+                        email = firebaseUser.email ?: "",
+                        divisionId = null,
+                        tutorialDone = false
+                    )
+                    firestore.collection("users").document(firebaseUser.uid).set(newUser).await()
+                    _currentUser.value = newUser
+                }
+                _currentUser.value?.let { syncPublicProfile(it) }
+            }
+            registerFcmTokenForCurrentUser()
+            true
+        } catch (e: FirebaseAuthException) {
+            Log.w("TennisRepository", "Google sign-in auth error: ${e.errorCode} ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "Google sign-in unexpected error: ${e.message}")
+            false
+        }
     }
 
     fun logout() {
@@ -193,33 +244,79 @@ object TennisRepository {
         _currentUser.value = _currentUser.value?.copy(availability = availability)
     }
 
-    fun updateUserProfile(userId: String = "", displayName: String = "", avatarUrl: String = "", phone: String? = ""): Boolean {
-        _currentUser.value = _currentUser.value?.copy(displayName = displayName, phone = phone ?: "")
-        return true
+    suspend fun updateUserProfile(userId: String = "", displayName: String = "", avatarUrl: String = "", phone: String? = ""): Boolean {
+        val current = _currentUser.value ?: return false
+        val updated = current.copy(
+            displayName = displayName,
+            avatarUrl = avatarUrl.ifBlank { null },
+            phone = phone?.ifBlank { null }
+        )
+        _currentUser.value = updated
+
+        val firestore = FirebaseInitializer.getFirestore() ?: return false
+        return try {
+            firestore.collection("users").document(updated.id)
+                .set(
+                    mapOf(
+                        "displayName" to updated.displayName,
+                        "avatarUrl" to updated.avatarUrl,
+                        "phone" to updated.phone
+                    ),
+                    SetOptions.merge()
+                ).await()
+            syncPublicProfile(updated)
+            true
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "updateUserProfile Firestore error: ${e.message}")
+            false
+        }
+    }
+
+    /** Writes the non-PII mirror doc (`profiles/{uid}`) that roster/ranking reads depend on. */
+    private suspend fun syncPublicProfile(user: User) {
+        val firestore = FirebaseInitializer.getFirestore() ?: return
+        try {
+            firestore.collection("profiles").document(user.id)
+                .set(
+                    mapOf(
+                        "id" to user.id,
+                        "displayName" to user.displayName,
+                        "avatarUrl" to user.avatarUrl,
+                        "divisionId" to user.divisionId,
+                        "role" to user.role,
+                        "tutorialDone" to user.tutorialDone,
+                        "updatedAt" to System.currentTimeMillis()
+                    ),
+                    SetOptions.merge()
+                ).await()
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "syncPublicProfile error: ${e.message}")
+        }
     }
 
     fun acceptMatchProposal(matchId: String) {
-        _matches.value = _matches.value.map { m ->
-            if (m.id == matchId) m.copy(status = "scheduled") else m
-        }
+        val existing = _matches.value.find { it.id == matchId } ?: return
+        val updated = existing.copy(status = "scheduled")
+        _matches.value = _matches.value.map { if (it.id == matchId) updated else it }
+        syncMatchToFirestore(updated)
     }
 
     fun declineMatchProposal(matchId: String) {
-        _matches.value = _matches.value.map { m ->
-            if (m.id == matchId) m.copy(status = "cancelled") else m
-        }
+        val existing = _matches.value.find { it.id == matchId } ?: return
+        val updated = existing.copy(status = "cancelled")
+        _matches.value = _matches.value.map { if (it.id == matchId) updated else it }
+        syncMatchToFirestore(updated)
     }
 
     fun startMatch(matchId: String) {
-        _matches.value = _matches.value.map { m ->
-            if (m.id == matchId) {
-                m.copy(
-                    status = "in_progress",
-                    startedAt = System.currentTimeMillis(),
-                    liveScore = ScoreEngine.createInitialScore(m.format)
-                )
-            } else m
-        }
+        val existing = _matches.value.find { it.id == matchId } ?: return
+        val updated = existing.copy(
+            status = "in_progress",
+            startedAt = System.currentTimeMillis(),
+            liveScore = ScoreEngine.createInitialScore(existing.format)
+        )
+        _matches.value = _matches.value.map { if (it.id == matchId) updated else it }
+        syncMatchToFirestore(updated)
     }
 
     fun applyLivePoint(matchId: String, scorer: Player) {
@@ -262,82 +359,86 @@ object TennisRepository {
     }
 
     fun undoLivePoint(matchId: String) {
-        _matches.value = _matches.value.map { m ->
-            if (m.id == matchId && m.undoSnapshot != null) {
-                val snap = m.undoSnapshot
-                m.copy(
-                    liveScore = snap.liveScore,
-                    status = snap.status,
-                    winner = snap.winner,
-                    completedAt = snap.completedAt,
-                    stats = snap.stats,
-                    currentSetStartedAt = snap.currentSetStartedAt,
-                    matchDurationMs = snap.matchDurationMs,
-                    undoSnapshot = null
-                )
-            } else m
-        }
+        val existing = _matches.value.find { it.id == matchId } ?: return
+        val snap = existing.undoSnapshot ?: return
+        val updated = existing.copy(
+            liveScore = snap.liveScore,
+            status = snap.status,
+            winner = snap.winner,
+            completedAt = snap.completedAt,
+            stats = snap.stats,
+            currentSetStartedAt = snap.currentSetStartedAt,
+            matchDurationMs = snap.matchDurationMs,
+            undoSnapshot = null
+        )
+        _matches.value = _matches.value.map { if (it.id == matchId) updated else it }
+        syncMatchToFirestore(updated)
     }
 
     fun updateAdvancedStats(matchId: String, stats: MatchStats) {
-        _matches.value = _matches.value.map { m ->
-            if (m.id == matchId) m.copy(stats = stats) else m
-        }
+        val existing = _matches.value.find { it.id == matchId } ?: return
+        val updated = existing.copy(stats = stats)
+        _matches.value = _matches.value.map { if (it.id == matchId) updated else it }
+        syncMatchToFirestore(updated)
     }
 
     fun submitMatchReport(matchId: String, winner: String, notes: String?) {
         val me = _currentUser.value ?: return
-        _matches.value = _matches.value.map { m ->
-            if (m.id == matchId) {
-                m.copy(
-                    status = "pending_report",
-                    winner = winner,
-                    reportSubmission = ReportSubmission(
-                        submittedBy = me.id,
-                        submittedAt = System.currentTimeMillis(),
-                        status = "pending_confirmation"
-                    )
-                )
-            } else m
-        }
+        val existing = _matches.value.find { it.id == matchId } ?: return
+        val updated = existing.copy(
+            status = "pending_report",
+            winner = winner,
+            reportSubmission = ReportSubmission(
+                submittedBy = me.id,
+                submittedAt = System.currentTimeMillis(),
+                status = "pending_confirmation"
+            )
+        )
+        _matches.value = _matches.value.map { if (it.id == matchId) updated else it }
+        syncMatchToFirestore(updated)
     }
 
     fun confirmMatchReport(matchId: String) {
         val me = _currentUser.value ?: return
-        _matches.value = _matches.value.map { m ->
-            if (m.id == matchId) {
-                val sub = m.reportSubmission?.copy(
-                    status = "confirmed",
-                    confirmedBy = me.id,
-                    confirmedAt = System.currentTimeMillis()
-                )
-                m.copy(
-                    status = "completed",
-                    reportSubmission = sub,
-                    reportUrl = "https://example.com/reports/$matchId.pdf"
-                )
-            } else m
-        }
+        val existing = _matches.value.find { it.id == matchId } ?: return
+        val sub = existing.reportSubmission?.copy(
+            status = "confirmed",
+            confirmedBy = me.id,
+            confirmedAt = System.currentTimeMillis()
+        )
+        // reportUrl is intentionally left as-is (usually null here): the already-deployed
+        // generateMatchReport Firestore trigger on the live project populates the real signed
+        // URL once status reaches "completed", and listenToMatchRealtime picks it up from there.
+        val updated = existing.copy(
+            status = "completed",
+            reportSubmission = sub
+        )
+        _matches.value = _matches.value.map { if (it.id == matchId) updated else it }
+        syncMatchToFirestore(updated)
         recalculateRankingsInternal()
     }
 
     fun disputeMatchReport(matchId: String, reason: String) {
         val me = _currentUser.value ?: return
-        _matches.value = _matches.value.map { m ->
-            if (m.id == matchId) {
-                val sub = m.reportSubmission?.copy(
-                    status = "disputed",
-                    disputedBy = me.id,
-                    disputedAt = System.currentTimeMillis()
-                )
-                m.copy(
-                    status = "disputed",
-                    reportSubmission = sub
-                )
-            } else m
-        }
+        val existing = _matches.value.find { it.id == matchId } ?: return
+        val sub = existing.reportSubmission?.copy(
+            status = "disputed",
+            disputedBy = me.id,
+            disputedAt = System.currentTimeMillis()
+        )
+        val updated = existing.copy(
+            status = "disputed",
+            reportSubmission = sub
+        )
+        _matches.value = _matches.value.map { if (it.id == matchId) updated else it }
+        syncMatchToFirestore(updated)
     }
 
+    // NOTE: kept local-state-only (not synced to Firestore) — the real `resolveDisputedReport`
+    // Cloud Function callable only takes { matchId } and confirms whatever report was already
+    // submitted; it has no way to honor an arbitrary "award to player X" choice like this UI
+    // offers. Wiring the real callable here would silently ignore the leader's P1/P2 selection.
+    // See the implementation report for what's needed to close this gap for real.
     fun resolveDisputedReport(matchId: String, winner: String) {
         _matches.value = _matches.value.map { m ->
             if (m.id == matchId) {
@@ -349,8 +450,7 @@ object TennisRepository {
                 m.copy(
                     status = "completed",
                     winner = winner,
-                    reportSubmission = sub,
-                    reportUrl = "https://example.com/reports/$matchId.pdf"
+                    reportSubmission = sub
                 )
             } else m
         }
@@ -358,8 +458,29 @@ object TennisRepository {
     }
 
     // RANKING ACTIONS
-    fun recalculateDivisionRankings() {
-        recalculateRankingsInternal()
+    suspend fun recalculateDivisionRankings(): Boolean {
+        val divisionId = _currentDivision.value?.id
+        val functions = FirebaseInitializer.getFunctions()
+        if (divisionId == null || functions == null) {
+            recalculateRankingsInternal()
+            return false
+        }
+        return try {
+            functions.getHttpsCallable("recalculateDivisionRankings")
+                .call(mapOf("divisionId" to divisionId))
+                .await()
+            // The callable writes divisions/{id}/rankings directly; listenToRankingsRealtime
+            // (already subscribed via startRealtimeSync) will pick up the fresh results.
+            true
+        } catch (e: FirebaseFunctionsException) {
+            Log.w("TennisRepository", "recalculateDivisionRankings error: ${e.code} ${e.message}")
+            recalculateRankingsInternal()
+            false
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "recalculateDivisionRankings unexpected error: ${e.message}")
+            recalculateRankingsInternal()
+            false
+        }
     }
 
     private fun recalculateRankingsInternal() {
@@ -425,39 +546,144 @@ object TennisRepository {
     }
 
     // DIVISION ADMIN ACTIONS
-    fun createDivision(name: String): String {
-        val newId = "div_${System.currentTimeMillis()}"
-        val newDiv = Division(id = newId, name = name, inviteCode = "JOIN_${System.currentTimeMillis() % 10000}", leaderIds = listOf(_currentUser.value?.id ?: ""))
-        _currentDivision.value = newDiv
-        _currentUser.value = _currentUser.value?.copy(divisionId = newId)
-        return newId
+
+    suspend fun createDivision(name: String): String? {
+        val functions = FirebaseInitializer.getFunctions() ?: return null
+        return try {
+            val result = functions.getHttpsCallable("createDivision").call(mapOf("name" to name)).await()
+            val data = result.data as? Map<*, *> ?: return null
+            val divisionId = data["divisionId"] as? String ?: return null
+            val inviteCode = data["inviteCode"] as? String ?: ""
+            _currentDivision.value = Division(
+                id = divisionId,
+                name = name,
+                inviteCode = inviteCode,
+                leaderIds = listOfNotNull(_currentUser.value?.id)
+            )
+            _currentUser.value = _currentUser.value?.copy(divisionId = divisionId, role = "division_leader")
+            divisionId
+        } catch (e: FirebaseFunctionsException) {
+            Log.w("TennisRepository", "createDivision error: ${e.code} ${e.message}")
+            null
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "createDivision unexpected error: ${e.message}")
+            null
+        }
     }
 
-    fun joinDivisionByCode(code: String): Boolean {
-        _currentDivision.value = _currentDivision.value?.copy(inviteCode = code) ?: Division(id = "div_metro_1", name = "Joined Division", inviteCode = code)
-        _currentUser.value = _currentUser.value?.copy(divisionId = _currentDivision.value?.id)
-        return true
+    suspend fun joinDivisionByCode(code: String): Boolean {
+        val functions = FirebaseInitializer.getFunctions() ?: return false
+        return try {
+            val result = functions.getHttpsCallable("joinDivisionByCode").call(mapOf("inviteCode" to code)).await()
+            val data = result.data as? Map<*, *> ?: return false
+            val divisionId = data["divisionId"] as? String ?: return false
+            val divisionName = data["divisionName"] as? String ?: ""
+            _currentDivision.value = (_currentDivision.value ?: Division()).copy(
+                id = divisionId,
+                name = divisionName,
+                inviteCode = code
+            )
+            _currentUser.value = _currentUser.value?.copy(divisionId = divisionId)
+            true
+        } catch (e: FirebaseFunctionsException) {
+            Log.w("TennisRepository", "joinDivisionByCode error: ${e.code} ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "joinDivisionByCode unexpected error: ${e.message}")
+            false
+        }
     }
 
-    fun addPlayerByEmail(email: String, levelId: String) {
-        val id = "user_${System.currentTimeMillis()}"
-        val name = email.substringBefore("@").replace(".", " ").replaceFirstChar { it.uppercase() }
-        val newPlayer = PublicProfile(id = id, displayName = name, role = "player", divisionId = _currentDivision.value?.id)
-        _divisionPlayers.value = _divisionPlayers.value + newPlayer
+    /**
+     * Routed through `upsertDivisionMembership` (not the simpler `addPlayerToDivisionByEmail`)
+     * since it accepts seasonId/divisionLevelId and creates a real DivisionMembership record —
+     * this is what makes season/level roster ("membership") tracking real instead of local-only.
+     */
+    suspend fun addPlayerByEmail(email: String, levelId: String): Boolean {
+        val divisionId = _currentDivision.value?.id ?: return false
+        val functions = FirebaseInitializer.getFunctions() ?: return false
+        return try {
+            functions.getHttpsCallable("upsertDivisionMembership").call(
+                mapOf(
+                    "divisionId" to divisionId,
+                    "seasonId" to _selectedSeasonId.value,
+                    "divisionLevelId" to levelId,
+                    "email" to email,
+                    "sendInvite" to true
+                )
+            ).await()
+            true
+        } catch (e: FirebaseFunctionsException) {
+            Log.w("TennisRepository", "addPlayerByEmail error: ${e.code} ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "addPlayerByEmail unexpected error: ${e.message}")
+            false
+        }
     }
 
-    fun addPlaceholderMember(name: String, levelId: String) {
-        val id = "placeholder_${System.currentTimeMillis()}"
-        val newPlayer = PublicProfile(id = id, displayName = "$name (Placeholder)", role = "player", divisionId = _currentDivision.value?.id)
-        _divisionPlayers.value = _divisionPlayers.value + newPlayer
+    suspend fun addPlaceholderMember(name: String, levelId: String): Boolean {
+        val divisionId = _currentDivision.value?.id ?: return false
+        val functions = FirebaseInitializer.getFunctions() ?: return false
+        return try {
+            functions.getHttpsCallable("upsertDivisionMembership").call(
+                mapOf(
+                    "divisionId" to divisionId,
+                    "seasonId" to _selectedSeasonId.value,
+                    "divisionLevelId" to levelId,
+                    "name" to name
+                )
+            ).await()
+            true
+        } catch (e: FirebaseFunctionsException) {
+            Log.w("TennisRepository", "addPlaceholderMember error: ${e.code} ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "addPlaceholderMember unexpected error: ${e.message}")
+            false
+        }
     }
 
-    fun mergePlayerRecords(sourceId: String, targetId: String) {
-        _divisionPlayers.value = _divisionPlayers.value.filter { it.id != sourceId }
+    suspend fun mergePlayerRecords(sourceId: String, targetId: String): Boolean {
+        val divisionId = _currentDivision.value?.id ?: return false
+        val functions = FirebaseInitializer.getFunctions() ?: return false
+        return try {
+            functions.getHttpsCallable("mergeDivisionPlayerRecords").call(
+                mapOf(
+                    "divisionId" to divisionId,
+                    "sourceUserId" to sourceId,
+                    "targetUserId" to targetId
+                )
+            ).await()
+            true
+        } catch (e: FirebaseFunctionsException) {
+            Log.w("TennisRepository", "mergePlayerRecords error: ${e.code} ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "mergePlayerRecords unexpected error: ${e.message}")
+            false
+        }
     }
 
-    fun updatePlayerEmail(userId: String, newEmail: String) {
-        // Updated email snapshot
+    suspend fun updatePlayerEmail(userId: String, newEmail: String): Boolean {
+        val divisionId = _currentDivision.value?.id ?: return false
+        val functions = FirebaseInitializer.getFunctions() ?: return false
+        return try {
+            functions.getHttpsCallable("updateDivisionPlayerEmail").call(
+                mapOf(
+                    "divisionId" to divisionId,
+                    "userId" to userId,
+                    "email" to newEmail
+                )
+            ).await()
+            true
+        } catch (e: FirebaseFunctionsException) {
+            Log.w("TennisRepository", "updatePlayerEmail error: ${e.code} ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "updatePlayerEmail unexpected error: ${e.message}")
+            false
+        }
     }
 
     fun updateScoreFromWatch(p1: Int, p2: Int) {
@@ -489,7 +715,24 @@ object TennisRepository {
         syncMatchToFirestore(updatedMatch)
     }
 
-    fun exportDivisionCsv(): String {
+    suspend fun exportDivisionCsv(): String {
+        val divisionId = _currentDivision.value?.id
+        val functions = FirebaseInitializer.getFunctions()
+        if (divisionId != null && functions != null) {
+            try {
+                val result = functions.getHttpsCallable("exportDivisionCsv").call(
+                    mapOf("divisionId" to divisionId, "exportType" to "rankings")
+                ).await()
+                val data = result.data as? Map<*, *>
+                val csv = data?.get("csv") as? String
+                if (csv != null) return csv
+            } catch (e: FirebaseFunctionsException) {
+                Log.w("TennisRepository", "exportDivisionCsv error: ${e.code} ${e.message}")
+            } catch (e: Exception) {
+                Log.w("TennisRepository", "exportDivisionCsv unexpected error: ${e.message}")
+            }
+        }
+        // Fallback: build from local rankings state if the callable is unavailable/fails.
         val sb = StringBuilder()
         sb.append("Rank,Name,Matches Played,Matches Won,Sets Won,Games Won,Game Diff\n")
         _rankings.value.forEach { r ->
@@ -515,21 +758,79 @@ object TennisRepository {
             sharedContact = contact,
             readBy = listOf(me.id)
         )
+        val lastMessage = LastMessage(content, me.id, me.displayName, System.currentTimeMillis())
 
         val currentList = _messagesMap.value[channelId] ?: emptyList()
         _messagesMap.value = _messagesMap.value + (channelId to (currentList + newMsg))
 
-        // Update channel last message
+        // Update channel last message (local)
         _channels.value = _channels.value.map { c ->
-            if (c.id == channelId) {
-                c.copy(lastMessage = LastMessage(content, me.id, me.displayName, System.currentTimeMillis()))
-            } else c
+            if (c.id == channelId) c.copy(lastMessage = lastMessage) else c
+        }
+
+        // Persist to Firestore so other participants (and the onNewMessage trigger's FCM push
+        // on the live project) actually see this message.
+        try {
+            val firestore = FirebaseInitializer.getFirestore() ?: return
+            firestore.collection("channels").document(channelId)
+                .collection("messages").document(newMsg.id)
+                .set(newMsg)
+                .addOnFailureListener { e -> Log.w("TennisRepository", "sendMessage sync error: ${e.message}") }
+            firestore.collection("channels").document(channelId)
+                .set(mapOf("lastMessage" to lastMessage), SetOptions.merge())
+                .addOnFailureListener { e -> Log.w("TennisRepository", "channel lastMessage sync error: ${e.message}") }
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "sendMessage non-fatal error: ${e.message}")
         }
     }
 
-    fun submitFeedback(category: String, text: String): Boolean {
-        // Calls submitFeedback Cloud Function
-        return true
+    fun listenToChannelMessagesRealtime(channelId: String): ListenerRegistration? {
+        val firestore = FirebaseInitializer.getFirestore() ?: return null
+        return firestore.collection("channels").document(channelId).collection("messages")
+            .addSnapshotListener { snapshots, error ->
+                if (error != null || snapshots == null) return@addSnapshotListener
+                val remoteMessages = snapshots.documents.mapNotNull { doc ->
+                    try { doc.toObject(Message::class.java) } catch (e: Exception) { null }
+                }
+                if (remoteMessages.isNotEmpty()) {
+                    _messagesMap.value = _messagesMap.value + (channelId to remoteMessages)
+                }
+            }
+    }
+
+    fun listenToUserChannelsRealtime(userId: String): ListenerRegistration? {
+        val firestore = FirebaseInitializer.getFirestore() ?: return null
+        return firestore.collection("channels")
+            .whereArrayContains("participantIds", userId)
+            .addSnapshotListener { snapshots, error ->
+                if (error != null || snapshots == null) return@addSnapshotListener
+                val remoteChannels = snapshots.documents.mapNotNull { doc ->
+                    try { doc.toObject(Channel::class.java) } catch (e: Exception) { null }
+                }
+                if (remoteChannels.isNotEmpty()) {
+                    val currentMap = _channels.value.associateBy { it.id }.toMutableMap()
+                    remoteChannels.forEach { currentMap[it.id] = it }
+                    _channels.value = currentMap.values.toList()
+                }
+            }
+    }
+
+    suspend fun submitFeedback(category: String, text: String): Boolean {
+        val functions = FirebaseInitializer.getFunctions() ?: return false
+        return try {
+            val data = hashMapOf(
+                "title" to "[$category] Feedback from Tennis League Android app",
+                "body" to text
+            )
+            functions.getHttpsCallable("submitFeedback").call(data).await()
+            true
+        } catch (e: FirebaseFunctionsException) {
+            Log.w("TennisRepository", "submitFeedback callable error: ${e.code} ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "submitFeedback unexpected error: ${e.message}")
+            false
+        }
     }
 
     fun publishGeneratedSchedule(generatedMatches: List<Match>, clearExistingScheduled: Boolean = false) {
@@ -569,6 +870,73 @@ object TennisRepository {
         listenToDivisionMatchesRealtime(divisionId)
         listenToPlayersRealtime(divisionId)
         listenToLeagueRealtime(divisionId)
+        listenToRankingsRealtime(divisionId)
+        listenToHeadToHeadRealtime(divisionId)
+        _currentUser.value?.id?.let { listenToUserChannelsRealtime(it) }
+    }
+
+    fun listenToRankingsRealtime(divisionId: String): ListenerRegistration? {
+        val firestore = FirebaseInitializer.getFirestore() ?: return null
+        return firestore.collection("divisions").document(divisionId).collection("rankings")
+            .addSnapshotListener { snapshots, error ->
+                if (error != null || snapshots == null) return@addSnapshotListener
+                val remoteRankings = snapshots.documents.mapNotNull { doc -> parsePlayerRankingDoc(doc) }
+                if (remoteRankings.isNotEmpty()) {
+                    _rankings.value = remoteRankings.sortedBy { it.rank }
+                } else {
+                    // No server-computed rankings yet for this division — fall back to local
+                    // recompute, same fallback shape TennisScoring's own useRankings hook uses.
+                    recalculateRankingsInternal()
+                }
+            }
+    }
+
+    /**
+     * Firestore's automatic POJO mapping throws if a document field is a Timestamp but the
+     * target Kotlin property is typed Long — TennisScoring's Cloud Function writes rankings'
+     * `updatedAt` via FieldValue.serverTimestamp() (unlike most other collections' plain
+     * epoch-ms longs), so rankings are parsed manually instead of via doc.toObject(...).
+     */
+    private fun parsePlayerRankingDoc(doc: com.google.firebase.firestore.DocumentSnapshot): PlayerRanking? {
+        return try {
+            val updatedAtMillis = doc.getTimestamp("updatedAt")?.toDate()?.time
+                ?: doc.getLong("updatedAt")
+                ?: 0L
+            PlayerRanking(
+                userId = doc.getString("userId") ?: return null,
+                displayName = doc.getString("displayName") ?: "",
+                divisionId = doc.getString("divisionId") ?: "",
+                season = doc.getString("season") ?: "",
+                seasonId = doc.getString("seasonId"),
+                divisionLevelId = doc.getString("divisionLevelId"),
+                matchType = doc.getString("matchType"),
+                rank = (doc.getLong("rank") ?: 0L).toInt(),
+                matchesPlayed = (doc.getLong("matchesPlayed") ?: 0L).toInt(),
+                matchesWon = (doc.getLong("matchesWon") ?: 0L).toInt(),
+                matchesLost = (doc.getLong("matchesLost") ?: 0L).toInt(),
+                setsWon = (doc.getLong("setsWon") ?: 0L).toInt(),
+                setsLost = (doc.getLong("setsLost") ?: 0L).toInt(),
+                gamesWon = (doc.getLong("gamesWon") ?: 0L).toInt(),
+                gamesLost = (doc.getLong("gamesLost") ?: 0L).toInt(),
+                gameDifferential = (doc.getLong("gameDifferential") ?: 0L).toInt(),
+                updatedAt = updatedAtMillis
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun listenToHeadToHeadRealtime(divisionId: String): ListenerRegistration? {
+        val firestore = FirebaseInitializer.getFirestore() ?: return null
+        return firestore.collection("headToHead")
+            .whereEqualTo("divisionId", divisionId)
+            .addSnapshotListener { snapshots, error ->
+                if (error != null || snapshots == null) return@addSnapshotListener
+                val remote = snapshots.documents.mapNotNull { doc ->
+                    try { doc.toObject(HeadToHead::class.java) } catch (e: Exception) { null }
+                }
+                _headToHead.value = remote
+            }
     }
 
     fun listenToDivisionMatchesRealtime(divisionId: String): ListenerRegistration? {
@@ -590,7 +958,10 @@ object TennisRepository {
 
     fun listenToPlayersRealtime(divisionId: String): ListenerRegistration? {
         val firestore = FirebaseInitializer.getFirestore() ?: return null
-        return firestore.collection("users")
+        // Reads "profiles" (the public, non-PII mirror), not "users" (private, self/admin-only
+        // under TennisScoring's Firestore rules) — querying "users" here would return empty for
+        // every player but the caller once real security rules are enforced.
+        return firestore.collection("profiles")
             .whereEqualTo("divisionId", divisionId)
             .addSnapshotListener { snapshots, error ->
                 if (error != null || snapshots == null) return@addSnapshotListener

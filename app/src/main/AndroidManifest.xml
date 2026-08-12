@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name=".TennisApplication"
         android:allowBackup="true"
@@ -23,11 +26,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- Disable FCM auto-init on startup to prevent hard token retrieval failure errors when FCM sender ID is unconfigured -->
-        <meta-data
-            android:name="firebase_messaging_auto_init_enabled"
-            android:value="false" />
 
         <service
             android:name=".firebase.TennisFirebaseMessagingService"

@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.models.PublicProfile
 import com.example.data.repository.TennisRepository
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,6 +27,7 @@ fun AdminScreen(
     val players by TennisRepository.divisionPlayers.collectAsState()
     val division by TennisRepository.currentDivision.collectAsState()
     val matches by TennisRepository.matches.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
 
     val disputedMatches = matches.filter { it.status == "disputed" }
 
@@ -63,7 +65,9 @@ fun AdminScreen(
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
-                                    csvExportContent = TennisRepository.exportDivisionCsv()
+                                    coroutineScope.launch {
+                                        csvExportContent = TennisRepository.exportDivisionCsv()
+                                    }
                                 },
                                 modifier = Modifier
                                     .weight(1f)
@@ -75,7 +79,7 @@ fun AdminScreen(
                             }
 
                             Button(
-                                onClick = { TennisRepository.recalculateDivisionRankings() },
+                                onClick = { coroutineScope.launch { TennisRepository.recalculateDivisionRankings() } },
                                 modifier = Modifier
                                     .weight(1f)
                                     .testTag("admin_recalculate_rankings_button")
@@ -235,7 +239,7 @@ fun AdminScreen(
         AddPlayerDialog(
             onDismiss = { showAddPlayerDialog = false },
             onAdd = { email ->
-                TennisRepository.addPlayerByEmail(email, "lvl_advanced")
+                coroutineScope.launch { TennisRepository.addPlayerByEmail(email, "lvl_advanced") }
                 showAddPlayerDialog = false
             }
         )
@@ -245,7 +249,7 @@ fun AdminScreen(
         AddPlaceholderDialog(
             onDismiss = { showAddPlaceholderDialog = false },
             onAdd = { name ->
-                TennisRepository.addPlaceholderMember(name, "lvl_advanced")
+                coroutineScope.launch { TennisRepository.addPlaceholderMember(name, "lvl_advanced") }
                 showAddPlaceholderDialog = false
             }
         )

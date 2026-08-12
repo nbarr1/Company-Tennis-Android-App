@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.repository.TennisRepository
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,6 +30,9 @@ fun FeedbackScreen(
     var selectedCategory by remember { mutableStateOf(categories[0]) }
     var feedbackText by remember { mutableStateOf("") }
     var submitted by remember { mutableStateOf(false) }
+    var isSubmitting by remember { mutableStateOf(false) }
+    var submitError by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -114,11 +118,24 @@ fun FeedbackScreen(
                                 .testTag("feedback_text_input")
                         )
 
+                        submitError?.let { err ->
+                            Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+
                         Button(
                             onClick = {
-                                if (feedbackText.isNotBlank()) {
-                                    TennisRepository.submitFeedback(selectedCategory, feedbackText)
-                                    submitted = true
+                                if (feedbackText.isNotBlank() && !isSubmitting) {
+                                    isSubmitting = true
+                                    submitError = null
+                                    coroutineScope.launch {
+                                        val success = TennisRepository.submitFeedback(selectedCategory, feedbackText)
+                                        isSubmitting = false
+                                        if (success) {
+                                            submitted = true
+                                        } else {
+                                            submitError = "Failed to submit feedback. Please try again."
+                                        }
+                                    }
                                 }
                             },
                             modifier = Modifier
@@ -126,9 +143,17 @@ fun FeedbackScreen(
                                 .height(50.dp)
                                 .testTag("submit_feedback_button"),
                             shape = RoundedCornerShape(12.dp),
-                            enabled = feedbackText.isNotBlank()
+                            enabled = feedbackText.isNotBlank() && !isSubmitting
                         ) {
-                            Text("Submit Feedback", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            if (isSubmitting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("Submit Feedback", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }

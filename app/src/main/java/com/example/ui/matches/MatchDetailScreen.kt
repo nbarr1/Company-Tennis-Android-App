@@ -1,6 +1,7 @@
 package com.example.ui.matches
 
 import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -587,6 +588,9 @@ fun PendingReportView(match: Match, currentUserId: String) {
 
 @Composable
 fun CompletedMatchView(match: Match) {
+    val context = LocalContext.current
+    val reportUrl = match.reportUrl
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -607,16 +611,21 @@ fun CompletedMatchView(match: Match) {
         Spacer(modifier = Modifier.height(32.dp))
 
         Button(
-            onClick = { /* Open report URL */ },
+            onClick = {
+                if (!reportUrl.isNullOrBlank()) {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(reportUrl)))
+                }
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(50.dp)
                 .testTag("download_pdf_report_button"),
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(12.dp),
+            enabled = !reportUrl.isNullOrBlank()
         ) {
             Icon(Icons.Default.PictureAsPdf, contentDescription = null)
             Spacer(modifier = Modifier.width(8.dp))
-            Text("Download Official PDF Report")
+            Text(if (reportUrl.isNullOrBlank()) "Generating PDF Report…" else "Download Official PDF Report")
         }
     }
 }
