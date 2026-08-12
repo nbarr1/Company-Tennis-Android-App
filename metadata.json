@@ -1,0 +1,6 @@
+{
+  "name": "Tennis League",
+  "description": "Tennis league scoring and management app with real-time match tracking, division rankings, and wear companion.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,28 @@
+    fun updateScoreFromWatch(p1: Int, p2: Int) {
+        val activeMatch = _matches.value.find { it.status == "in_progress" } ?: return
+        val currentLiveScore = activeMatch.liveScore
+        
+        fun intToPoint(p: Int): TennisPoint = when (p) {
+            1 -> TennisPoint.P15
+            2 -> TennisPoint.P30
+            3 -> TennisPoint.P40
+            4 -> TennisPoint.AD
+            else -> TennisPoint.LOVE
+        }
+        
+        val newLiveScore = currentLiveScore.copy(
+            currentGame = GameScore(
+                player1 = intToPoint(p1),
+                player2 = intToPoint(p2)
+            )
+        )
+        
+        val updatedMatch = activeMatch.copy(liveScore = newLiveScore)
+        
+        _matches.value = _matches.value.map { m ->
+            if (m.id == activeMatch.id) updatedMatch else m
+        }
+        
+        // Sync to firestore
+        syncMatchToFirestore(updatedMatch)
+    }
