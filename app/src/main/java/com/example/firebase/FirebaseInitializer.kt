@@ -6,6 +6,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreSettings
+import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -72,11 +73,17 @@ object FirebaseInitializer {
         } else null
     }
 
+    fun getFunctions(): FirebaseFunctions? {
+        return if (_isInitialized.value) {
+            try { FirebaseFunctions.getInstance() } catch (e: Exception) { null }
+        } else null
+    }
+
     private fun initFcmTokenSafely() {
         try {
             val messaging = com.google.firebase.messaging.FirebaseMessaging.getInstance()
-            messaging.isAutoInitEnabled = false
-            Log.d(TAG, "FirebaseMessaging auto-init disabled to prevent unconfigured token sync exceptions.")
+            messaging.isAutoInitEnabled = true
+            Log.d(TAG, "FirebaseMessaging auto-init enabled (real google-services.json is present).")
         } catch (e: Exception) {
             Log.w(TAG, "FCM setup non-fatal notice: ${e.message}")
         }

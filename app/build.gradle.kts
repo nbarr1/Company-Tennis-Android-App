@@ -71,7 +71,7 @@ secrets {
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
 }
 
-googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.WARN }
+googleServices { missingGoogleServicesStrategy = MissingGoogleServicesStrategy.ERROR }
 
 // Some unused dependencies are commented out below instead of being removed.
 // This makes it easy to add them back in the future if needed.
@@ -96,11 +96,11 @@ dependencies {
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation(libs.androidx.navigation.compose)
-  implementation(libs.androidx.room.ktx)
-  implementation(libs.androidx.room.runtime)
+  // implementation(libs.androidx.room.ktx) // unused: no Room entities/DAOs in this app
+  // implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)
-  implementation(libs.converter.moshi)
-  implementation(libs.firebase.ai)
+  // implementation(libs.converter.moshi) // unused: no Retrofit usage anywhere; all networking is via Firebase SDKs
+  // implementation(libs.firebase.ai) // unused, not part of this pass's scope
   implementation(libs.firebase.firestore)
 
   // Firebase Auth and credentials
@@ -110,17 +110,17 @@ dependencies {
   implementation(libs.googleid)
   implementation("com.google.firebase:firebase-functions")
   implementation("com.google.firebase:firebase-messaging")
-  implementation("com.google.firebase:firebase-storage")
+  // implementation("com.google.firebase:firebase-storage") // unused: avatar upload deferred, see implementation report
   implementation("com.google.android.gms:play-services-wearable:19.0.0")
-  implementation(libs.firebase.appcheck.recaptcha)
+  // implementation(libs.firebase.appcheck.recaptcha) // unused: AppCheck never initialized, out of scope this pass
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
-  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
-  implementation(libs.logging.interceptor)
-  implementation(libs.moshi.kotlin)
-  implementation(libs.okhttp)
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3") // provides Task<T>.await(), used throughout TennisRepository
+  // implementation(libs.logging.interceptor) // unused: no OkHttp/Retrofit usage anywhere
+  // implementation(libs.moshi.kotlin)
+  // implementation(libs.okhttp)
   // implementation(libs.play.services.location)
-  implementation(libs.retrofit)
+  // implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
@@ -137,6 +137,6 @@ dependencies {
   androidTestImplementation(libs.androidx.runner)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
-  "ksp"(libs.androidx.room.compiler)
-  "ksp"(libs.moshi.kotlin.codegen)
+  // "ksp"(libs.androidx.room.compiler) // unused: no Room entities/DAOs in this app
+  // "ksp"(libs.moshi.kotlin.codegen) // unused: no Moshi-serialized types anywhere
 }

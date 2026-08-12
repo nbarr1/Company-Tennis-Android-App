@@ -17,6 +17,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.repository.TennisRepository
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -24,9 +25,11 @@ fun DivisionJoinCreateScreen(
     onDivisionReady: () -> Unit
 ) {
     var isCreating by remember { mutableStateOf(false) }
-    var inviteCode by remember { mutableStateOf("METRO2026") }
+    var inviteCode by remember { mutableStateOf("") }
     var divisionName by remember { mutableStateOf("") }
     var errorMsg by remember { mutableStateOf<String?>(null) }
+    var isSubmitting by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     Box(
         modifier = Modifier
@@ -109,28 +112,47 @@ fun DivisionJoinCreateScreen(
                                 errorMsg = "Please enter a division name"
                                 return@Button
                             }
-                            TennisRepository.createDivision(divisionName)
-                            onDivisionReady()
+                            errorMsg = null
+                            isSubmitting = true
+                            coroutineScope.launch {
+                                val divisionId = TennisRepository.createDivision(divisionName)
+                                isSubmitting = false
+                                if (divisionId != null) onDivisionReady() else errorMsg = "Failed to create division. Please try again."
+                            }
                         } else {
                             if (inviteCode.isBlank()) {
                                 errorMsg = "Please enter an invite code"
                                 return@Button
                             }
-                            val success = TennisRepository.joinDivisionByCode(inviteCode)
-                            if (success) onDivisionReady() else errorMsg = "Invalid invite code"
+                            errorMsg = null
+                            isSubmitting = true
+                            coroutineScope.launch {
+                                val success = TennisRepository.joinDivisionByCode(inviteCode)
+                                isSubmitting = false
+                                if (success) onDivisionReady() else errorMsg = "Invalid invite code"
+                            }
                         }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp)
                         .testTag("division_submit_button"),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(14.dp),
+                    enabled = !isSubmitting
                 ) {
-                    Text(
-                        text = if (isCreating) "Create & Continue" else "Join Division",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    if (isSubmitting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = if (isCreating) "Create & Continue" else "Join Division",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))

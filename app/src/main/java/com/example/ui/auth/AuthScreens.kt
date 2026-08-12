@@ -15,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -22,6 +23,12 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.credentials.CredentialManager
+import androidx.credentials.CustomCredential
+import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialException
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
+import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import kotlinx.coroutines.launch
 import com.example.R
 import com.example.data.repository.TennisRepository
@@ -40,9 +47,9 @@ fun LoginScreen(
     onAuthSuccess: () -> Unit
 ) {
     var isSignUp by remember { mutableStateOf(false) }
-    var email by remember { mutableStateOf("alex.rivera@example.com") }
-    var password by remember { mutableStateOf("password123") }
-    var displayName by remember { mutableStateOf("Alex Rivera") }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var displayName by remember { mutableStateOf("") }
     
     var emailError by remember { mutableStateOf<String?>(null) }
     var passwordError by remember { mutableStateOf<String?>(null) }
@@ -50,6 +57,7 @@ fun LoginScreen(
     var generalError by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     fun validateInputs(): Boolean {
         var isValid = true
@@ -274,16 +282,35 @@ fun LoginScreen(
                 OutlinedButton(
                     onClick = {
                         isLoading = true
+                        generalError = null
                         coroutineScope.launch {
-                            val success = TennisRepository.loginWithGoogle(
-                                email = if (email.isNotBlank() && email.contains("@")) email else "alex.rivera@example.com",
-                                displayName = if (displayName.isNotBlank()) displayName else "Alex Rivera"
-                            )
-                            isLoading = false
-                            if (success) {
-                                onAuthSuccess()
-                            } else {
-                                generalError = "Google Sign-In failed."
+                            try {
+                                val credentialManager = CredentialManager.create(context)
+                                val signInOption = GetSignInWithGoogleOption.Builder(
+                                    context.getString(R.string.default_web_client_id)
+                                ).build()
+                                val request = GetCredentialRequest.Builder()
+                                    .addCredentialOption(signInOption)
+                                    .build()
+                                val result = credentialManager.getCredential(context, request)
+                                val credential = result.credential
+                                val idToken = if (
+                                    credential is CustomCredential &&
+                                    credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
+                                ) {
+                                    GoogleIdTokenCredential.createFrom(credential.data).idToken
+                                } else null
+
+                                val success = idToken != null && TennisRepository.loginWithGoogle(idToken)
+                                isLoading = false
+                                if (success) {
+                                    onAuthSuccess()
+                                } else {
+                                    generalError = "Google Sign-In failed."
+                                }
+                            } catch (e: GetCredentialException) {
+                                isLoading = false
+                                generalError = "Google Sign-In was cancelled or is unavailable on this device."
                             }
                         }
                     },

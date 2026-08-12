@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.repository.TennisRepository
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,6 +44,7 @@ fun UserProfileScreen(
 ) {
     val user by TennisRepository.currentUser.collectAsState()
     val division by TennisRepository.currentDivision.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
 
     var isEditingName by remember { mutableStateOf(false) }
     var editedDisplayName by remember(user) { mutableStateOf(user?.displayName ?: "") }
@@ -72,18 +74,20 @@ fun UserProfileScreen(
         }
 
         nameError = null
-        val success = TennisRepository.updateUserProfile(
-            displayName = trimmedName,
-            avatarUrl = selectedAvatarUrl,
-            phone = editedPhone.trim().ifEmpty { null }
-        )
+        coroutineScope.launch {
+            val success = TennisRepository.updateUserProfile(
+                displayName = trimmedName,
+                avatarUrl = selectedAvatarUrl,
+                phone = editedPhone.trim().ifEmpty { null }
+            )
 
-        if (success) {
-            isEditingName = false
-            snackbarMessage = "Profile updated successfully!"
-            showSuccessSnackbar = true
-        } else {
-            nameError = "Failed to update profile"
+            if (success) {
+                isEditingName = false
+                snackbarMessage = "Profile updated successfully!"
+                showSuccessSnackbar = true
+            } else {
+                nameError = "Failed to update profile"
+            }
         }
     }
 
