@@ -2,6 +2,7 @@ package com.example.ui.auth
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -36,15 +37,17 @@ import com.example.data.repository.TennisRepository
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AuthScreen(
-    onAuthSuccess: () -> Unit
+    onAuthSuccess: () -> Unit,
+    onViewPrivacyPolicy: () -> Unit = {}
 ) {
-    LoginScreen(onAuthSuccess = onAuthSuccess)
+    LoginScreen(onAuthSuccess = onAuthSuccess, onViewPrivacyPolicy = onViewPrivacyPolicy)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginScreen(
-    onAuthSuccess: () -> Unit
+    onAuthSuccess: () -> Unit,
+    onViewPrivacyPolicy: () -> Unit = {}
 ) {
     var isSignUp by remember { mutableStateOf(false) }
     var email by remember { mutableStateOf("") }
@@ -251,7 +254,29 @@ fun LoginScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "By continuing, you agree to our",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Privacy Policy",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .testTag("auth_privacy_policy_link")
+                            .clickable { onViewPrivacyPolicy() }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
 
                 // Divider line with "OR"
                 Row(
