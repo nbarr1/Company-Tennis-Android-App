@@ -116,9 +116,16 @@ fun ChannelCardItem(channel: Channel, onClick: () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatThreadView(channelId: String, onBack: () -> Unit) {
-    val messages = remember(channelId) { TennisRepository.getMessages(channelId) }
+    val allMessages = remember(channelId) { TennisRepository.getMessages(channelId) }
     var messageText by remember { mutableStateOf("") }
     val user by TennisRepository.currentUser.collectAsState()
+    val blockedUserIds = user?.blockedUserIds ?: emptyList()
+    val messages = remember(allMessages, blockedUserIds) {
+        allMessages.filterNot { it.senderId in blockedUserIds }
+    }
+
+    var reportDialogMessage by remember { mutableStateOf<Message?>(null) }
+    var blockDialogUser by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     Scaffold(
         topBar = {
@@ -194,11 +201,11 @@ fun ChatThreadView(channelId: String, onBack: () -> Unit) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(messages) { msg ->
+            items(messages, key = { it.id }) { msg ->
                 val isMe = msg.senderId == user?.id
-                Box(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = if (isMe) Alignment.CenterEnd else Alignment.CenterStart
+                    horizontalAlignment = if (isMe) Alignment.End else Alignment.Start
                 ) {
                     Card(
                         shape = RoundedCornerShape(16.dp),
@@ -230,8 +237,99 @@ fun ChatThreadView(channelId: String, onBack: () -> Unit) {
                             }
                         }
                     }
+
+                    if (!isMe) {
+                        Row {
+                            TextButton(
+                                onClick = { reportDialogMessage = msg },
+                                modifier = Modifier.testTag("report_message_${msg.id}"),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.Flag, contentDescription = "Report", modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Report", style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(
+                                onClick = { blockDialogUser = msg.senderId to msg.senderName },
+                                modifier = Modifier.testTag("block_user_${msg.senderId}"),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                            ) {
+                                Icon(Icons.Default.Block, contentDescription = "Block", modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Block", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+
+    reportDialogMessage?.let { msg ->
+        ReportMessageDialog(
+            onDismiss = { reportDialogMessage = null },
+            onConfirm = { reason ->
+                TennisRepository.reportMessage(channelId, msg, reason)
+                reportDialogMessage = null
+            }
+        )
+    }
+
+    blockDialogUser?.let { (blockedUserId, blockedUserName) ->
+        AlertDialog(
+            onDismissRequest = { blockDialogUser = null },
+            title = { Text("Block $blockedUserName?") },
+            text = { Text("You won't see messages from $blockedUserName anymore. You can unblock them later from your profile.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        TennisRepository.blockUser(blockedUserId)
+                        blockDialogUser = null
+                    },
+                    modifier = Modifier.testTag("confirm_block_user_button")
+                ) { Text("Block") }
+            },
+            dismissButton = {
+                TextButton(onClick = { blockDialogUser = null }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ReportMessageDialog(onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+    val reasons = listOf("Harassment", "Spam", "Inappropriate", "Other")
+    var selectedReason by remember { mutableStateOf(reasons.first()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Report Message") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Why are you reporting this message?", style = MaterialTheme.typography.bodyMedium)
+                Spacer(modifier = Modifier.height(8.dp))
+                reasons.forEach { reason ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedReason = reason }
+                            .testTag("report_reason_$reason")
+                    ) {
+                        RadioButton(selected = selectedReason == reason, onClick = { selectedReason = reason })
+                        Text(reason)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(selectedReason) },
+                modifier = Modifier.testTag("submit_report_button")
+            ) { Text("Submit Report") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
 }

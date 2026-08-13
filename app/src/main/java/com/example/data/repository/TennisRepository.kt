@@ -54,6 +54,10 @@ object TennisRepository {
     private val _messagesMap = MutableStateFlow<Map<String, List<Message>>>(emptyMap())
     val messagesMap: StateFlow<Map<String, List<Message>>> = _messagesMap.asStateFlow()
 
+    // Reported Messages Store (UGC moderation)
+    private val _reports = MutableStateFlow<List<MessageReport>>(emptyList())
+    val reports: StateFlow<List<MessageReport>> = _reports.asStateFlow()
+
     // Seasons Store
     private val _availableSeasons = MutableStateFlow(
         listOf(
@@ -194,6 +198,57 @@ object TennisRepository {
         _currentDivision.value = null
         _divisionPlayers.value = emptyList()
         _matches.value = emptyList()
+    }
+
+    /**
+     * Permanently deletes the current user's account and personal data, per Google Play's
+     * User Data policy account-deletion requirement. Match/ranking history that's jointly
+     * owned with other division members is left intact; only the user's own account doc and
+     * directly-identifying membership fields are removed.
+     *
+     * Returns false (without deleting anything) if Firebase requires a recent sign-in before
+     * allowing account deletion — the caller should ask the user to sign out, sign back in,
+     * and retry.
+     */
+    suspend fun deleteAccount(): Boolean {
+        val auth = FirebaseInitializer.getAuth() ?: return false
+        val firebaseUser = auth.currentUser ?: return false
+        val uid = firebaseUser.uid
+        val firestore = FirebaseInitializer.getFirestore()
+
+        return try {
+            if (firestore != null) {
+                firestore.collection("users").document(uid).delete().await()
+                firestore.collection("profiles").document(uid).delete().await()
+
+                _currentUser.value?.divisionId?.let { divisionId ->
+                    try {
+                        firestore.collection("divisions").document(divisionId)
+                            .update(
+                                "playerIds", com.google.firebase.firestore.FieldValue.arrayRemove(uid),
+                                "leaderIds", com.google.firebase.firestore.FieldValue.arrayRemove(uid)
+                            )
+                            .await()
+                    } catch (e: Exception) {
+                        Log.w("TennisRepository", "deleteAccount division cleanup error: ${e.message}")
+                    }
+                }
+            }
+
+            firebaseUser.delete().await()
+
+            _currentUser.value = null
+            _currentDivision.value = null
+            _divisionPlayers.value = emptyList()
+            _matches.value = emptyList()
+            true
+        } catch (e: com.google.firebase.auth.FirebaseAuthRecentLoginRequiredException) {
+            Log.w("TennisRepository", "deleteAccount requires recent login: ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "deleteAccount error: ${e.message}")
+            false
+        }
     }
 
     fun createMatch(player1Id: String, player2Id: String, format: MatchFormatConfig = MatchFormatConfig(), status: String = "in_progress", scheduledAt: Long? = null, courtLocation: String? = null): Match {
@@ -784,6 +839,98 @@ object TennisRepository {
         }
     }
 
+    /** Reports a message for review by division admins/leaders (UGC moderation). */
+    fun reportMessage(channelId: String, message: Message, reason: String) {
+        val me = _currentUser.value ?: return
+        val report = MessageReport(
+            id = "report_${System.currentTimeMillis()}",
+            divisionId = me.divisionId ?: "",
+            channelId = channelId,
+            messageId = message.id,
+            reportedUserId = message.senderId,
+            reportedUserName = message.senderName,
+            reporterId = me.id,
+            messageContent = message.content,
+            reason = reason
+        )
+        _reports.value = listOf(report) + _reports.value
+
+        try {
+            val firestore = FirebaseInitializer.getFirestore() ?: return
+            firestore.collection("reports").document(report.id)
+                .set(report)
+                .addOnFailureListener { e -> Log.w("TennisRepository", "reportMessage sync error: ${e.message}") }
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "reportMessage non-fatal error: ${e.message}")
+        }
+    }
+
+    /** Blocks another user: their messages are hidden from the current user's chat threads. */
+    fun blockUser(userId: String) {
+        val current = _currentUser.value ?: return
+        if (userId in current.blockedUserIds) return
+        val updated = current.copy(blockedUserIds = current.blockedUserIds + userId)
+        _currentUser.value = updated
+
+        try {
+            val firestore = FirebaseInitializer.getFirestore() ?: return
+            firestore.collection("users").document(current.id)
+                .update("blockedUserIds", com.google.firebase.firestore.FieldValue.arrayUnion(userId))
+                .addOnFailureListener { e -> Log.w("TennisRepository", "blockUser sync error: ${e.message}") }
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "blockUser non-fatal error: ${e.message}")
+        }
+    }
+
+    fun unblockUser(userId: String) {
+        val current = _currentUser.value ?: return
+        val updated = current.copy(blockedUserIds = current.blockedUserIds - userId)
+        _currentUser.value = updated
+
+        try {
+            val firestore = FirebaseInitializer.getFirestore() ?: return
+            firestore.collection("users").document(current.id)
+                .update("blockedUserIds", com.google.firebase.firestore.FieldValue.arrayRemove(userId))
+                .addOnFailureListener { e -> Log.w("TennisRepository", "unblockUser sync error: ${e.message}") }
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "unblockUser non-fatal error: ${e.message}")
+        }
+    }
+
+    fun listenToReportsRealtime(divisionId: String): ListenerRegistration? {
+        val firestore = FirebaseInitializer.getFirestore() ?: return null
+        return firestore.collection("reports")
+            .whereEqualTo("divisionId", divisionId)
+            .addSnapshotListener { snapshots, error ->
+                if (error != null || snapshots == null) return@addSnapshotListener
+                val remoteReports = snapshots.documents.mapNotNull { doc ->
+                    try { doc.toObject(MessageReport::class.java) } catch (e: Exception) { null }
+                }
+                _reports.value = remoteReports.sortedByDescending { it.createdAt }
+            }
+    }
+
+    /** Removes a reported message and marks the report reviewed — admin moderation action. */
+    fun resolveReport(report: MessageReport) {
+        _reports.value = _reports.value.map { if (it.id == report.id) it.copy(status = "reviewed") else it }
+        _messagesMap.value = _messagesMap.value.mapValues { (_, messages) ->
+            messages.filterNot { it.id == report.messageId }
+        }
+
+        try {
+            val firestore = FirebaseInitializer.getFirestore() ?: return
+            firestore.collection("channels").document(report.channelId)
+                .collection("messages").document(report.messageId)
+                .delete()
+                .addOnFailureListener { e -> Log.w("TennisRepository", "resolveReport message delete error: ${e.message}") }
+            firestore.collection("reports").document(report.id)
+                .update("status", "reviewed")
+                .addOnFailureListener { e -> Log.w("TennisRepository", "resolveReport status update error: ${e.message}") }
+        } catch (e: Exception) {
+            Log.w("TennisRepository", "resolveReport non-fatal error: ${e.message}")
+        }
+    }
+
     fun listenToChannelMessagesRealtime(channelId: String): ListenerRegistration? {
         val firestore = FirebaseInitializer.getFirestore() ?: return null
         return firestore.collection("channels").document(channelId).collection("messages")
@@ -872,6 +1019,7 @@ object TennisRepository {
         listenToLeagueRealtime(divisionId)
         listenToRankingsRealtime(divisionId)
         listenToHeadToHeadRealtime(divisionId)
+        listenToReportsRealtime(divisionId)
         _currentUser.value?.id?.let { listenToUserChannelsRealtime(it) }
     }
 

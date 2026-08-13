@@ -48,6 +48,7 @@ data class User(
     val availability: Availability? = null,
     val divisionId: String? = null,
     val role: String = "player", // player | division_leader | admin | app_developer
+    val blockedUserIds: List<String> = emptyList(),
     val fcmTokens: List<String> = emptyList(),
     val tipsEnabled: Boolean = true,
     val tutorialDone: Boolean? = false,
@@ -241,6 +242,20 @@ data class Message(
     val type: String = "text", // text | system | contact_share
     val sharedContact: SharedContact? = null,
     val readBy: List<String> = emptyList(),
+    val createdAt: Long = System.currentTimeMillis()
+)
+
+data class MessageReport(
+    val id: String = "",
+    val divisionId: String = "",
+    val channelId: String = "",
+    val messageId: String = "",
+    val reportedUserId: String = "",
+    val reportedUserName: String = "",
+    val reporterId: String = "",
+    val messageContent: String = "",
+    val reason: String = "Other", // Harassment | Spam | Inappropriate | Other
+    val status: String = "open", // open | reviewed
     val createdAt: Long = System.currentTimeMillis()
 )
 

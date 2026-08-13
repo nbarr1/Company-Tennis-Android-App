@@ -21,22 +21,28 @@ import androidx.compose.ui.unit.sp
 import com.example.data.models.Availability
 import com.example.data.models.AvailabilitySlot
 import com.example.data.repository.TennisRepository
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileScreen(
     onLogout: () -> Unit,
     onNavigateToMatchHistory: () -> Unit = {},
-    onNavigateToUserProfile: () -> Unit = {}
+    onNavigateToUserProfile: () -> Unit = {},
+    onNavigateToPrivacyPolicy: () -> Unit = {}
 ) {
     val user by TennisRepository.currentUser.collectAsState()
     val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
 
     var tipsEnabled by remember(user) { mutableStateOf(user?.tipsEnabled ?: true) }
     var noteText by remember(user) { mutableStateOf(user?.availability?.note ?: "") }
     var slots by remember(user) { mutableStateOf(user?.availability?.slots ?: emptyList()) }
 
     var showAddSlotDialog by remember { mutableStateOf(false) }
+    var showDeleteAccountDialog by remember { mutableStateOf(false) }
+    var isDeletingAccount by remember { mutableStateOf(false) }
+    var deleteAccountError by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
         topBar = {
@@ -152,6 +158,51 @@ fun ProfileScreen(
                             )
                             Text(
                                 text = "View previous division results fetched from Firestore",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Icon(
+                        imageVector = Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
+            // Privacy Policy Entry Card
+            Card(
+                onClick = onNavigateToPrivacyPolicy,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("profile_privacy_policy_button"),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.PrivacyTip,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Privacy Policy",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "How your data is collected, used, and deleted",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -291,6 +342,33 @@ fun ProfileScreen(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("Log Out", fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Delete Account Button
+            TextButton(
+                onClick = {
+                    deleteAccountError = null
+                    showDeleteAccountDialog = true
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("delete_account_button"),
+                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) {
+                Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Delete Account", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            deleteAccountError?.let { err ->
+                Text(
+                    text = err,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
     }
 
@@ -302,6 +380,49 @@ fun ProfileScreen(
                 slots = slots + newSlot
                 TennisRepository.updateAvailability(Availability(slots, noteText))
                 showAddSlotDialog = false
+            }
+        )
+    }
+
+    if (showDeleteAccountDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingAccount) showDeleteAccountDialog = false },
+            title = { Text("Delete Account") },
+            text = {
+                Text(
+                    "This permanently deletes your account and personal data. This can't be undone. " +
+                        "Match history shared with other players may be retained in anonymized form."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isDeletingAccount = true
+                        coroutineScope.launch {
+                            val success = TennisRepository.deleteAccount()
+                            isDeletingAccount = false
+                            if (success) {
+                                showDeleteAccountDialog = false
+                                onLogout()
+                            } else {
+                                deleteAccountError = "Couldn't delete your account. Please sign out, " +
+                                    "sign back in, and try again."
+                                showDeleteAccountDialog = false
+                            }
+                        }
+                    },
+                    modifier = Modifier.testTag("confirm_delete_account_button"),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    enabled = !isDeletingAccount
+                ) {
+                    Text(if (isDeletingAccount) "Deleting..." else "Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDeleteAccountDialog = false },
+                    enabled = !isDeletingAccount
+                ) { Text("Cancel") }
             }
         )
     }

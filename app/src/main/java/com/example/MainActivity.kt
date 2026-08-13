@@ -28,6 +28,7 @@ import com.example.ui.admin.AdminScreen
 import com.example.ui.auth.AuthScreen
 import com.example.ui.feedback.FeedbackScreen
 import com.example.ui.home.HomeScreen
+import com.example.ui.legal.PrivacyPolicyScreen
 import com.example.ui.matches.CreateMatchScreen
 import com.example.ui.matches.MatchDetailScreen
 import com.example.ui.matches.MatchHistoryScreen
@@ -90,6 +91,7 @@ object ScreenRoutes {
     const val USER_PROFILE = "user_profile"
     const val MATCH_SCHEDULER = "match_scheduler"
     const val FEEDBACK = "feedback"
+    const val PRIVACY_POLICY = "privacy_policy"
 }
 
 @Composable
@@ -116,7 +118,7 @@ fun MainAppEntry() {
 
     LaunchedEffect(targetRoute) {
         val currentRoute = navController.currentDestination?.route
-        if (currentRoute != targetRoute && currentRoute != ScreenRoutes.MATCH_DETAIL && currentRoute != ScreenRoutes.CREATE_MATCH && currentRoute != ScreenRoutes.MATCH_HISTORY && currentRoute != ScreenRoutes.USER_PROFILE && currentRoute != ScreenRoutes.MATCH_SCHEDULER && currentRoute != ScreenRoutes.FEEDBACK) {
+        if (currentRoute != targetRoute && currentRoute != ScreenRoutes.MATCH_DETAIL && currentRoute != ScreenRoutes.CREATE_MATCH && currentRoute != ScreenRoutes.MATCH_HISTORY && currentRoute != ScreenRoutes.USER_PROFILE && currentRoute != ScreenRoutes.MATCH_SCHEDULER && currentRoute != ScreenRoutes.FEEDBACK && currentRoute != ScreenRoutes.PRIVACY_POLICY) {
             navController.navigate(targetRoute) {
                 popUpTo(0) { inclusive = true }
                 launchSingleTop = true
@@ -132,6 +134,9 @@ fun MainAppEntry() {
             AuthScreen(
                 onAuthSuccess = {
                     // Automatically handled by user state observation
+                },
+                onViewPrivacyPolicy = {
+                    navController.navigate(ScreenRoutes.PRIVACY_POLICY)
                 }
             )
         }
@@ -168,6 +173,9 @@ fun MainAppEntry() {
                 },
                 onNavigateToFeedback = {
                     navController.navigate(ScreenRoutes.FEEDBACK)
+                },
+                onNavigateToPrivacyPolicy = {
+                    navController.navigate(ScreenRoutes.PRIVACY_POLICY)
                 },
                 onLogout = {
                     TennisRepository.logout()
@@ -216,6 +224,11 @@ fun MainAppEntry() {
                 onNavigateBack = { navController.popBackStack() }
             )
         }
+        composable(ScreenRoutes.PRIVACY_POLICY) {
+            PrivacyPolicyScreen(
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
     }
 }
 
@@ -236,6 +249,7 @@ fun MainScaffold(
     onNavigateToUserProfile: () -> Unit,
     onNavigateToMatchScheduler: () -> Unit,
     onNavigateToFeedback: () -> Unit,
+    onNavigateToPrivacyPolicy: () -> Unit,
     onLogout: () -> Unit
 ) {
     val user by TennisRepository.currentUser.collectAsState()
@@ -311,7 +325,8 @@ fun MainScaffold(
                     ProfileScreen(
                         onLogout = onLogout,
                         onNavigateToMatchHistory = onNavigateToMatchHistory,
-                        onNavigateToUserProfile = onNavigateToUserProfile
+                        onNavigateToUserProfile = onNavigateToUserProfile,
+                        onNavigateToPrivacyPolicy = onNavigateToPrivacyPolicy
                     )
                 }
                 composable(BottomTab.Admin.route) {

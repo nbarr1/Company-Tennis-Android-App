@@ -27,9 +27,11 @@ fun AdminScreen(
     val players by TennisRepository.divisionPlayers.collectAsState()
     val division by TennisRepository.currentDivision.collectAsState()
     val matches by TennisRepository.matches.collectAsState()
+    val reports by TennisRepository.reports.collectAsState()
     val coroutineScope = rememberCoroutineScope()
 
     val disputedMatches = matches.filter { it.status == "disputed" }
+    val openReports = reports.filter { it.status == "open" }
 
     var showAddPlayerDialog by remember { mutableStateOf(false) }
     var showAddPlaceholderDialog by remember { mutableStateOf(false) }
@@ -175,6 +177,38 @@ fun AdminScreen(
                                 Button(onClick = { TennisRepository.resolveDisputedReport(match.id, "player2") }) {
                                     Text("Award to P2")
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Reported Messages Section (UGC moderation)
+            if (openReports.isNotEmpty()) {
+                item {
+                    Text("Reported Messages", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+                }
+
+                items(openReports) { report ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("reported_message_${report.id}"),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text("Reported: ${report.reportedUserName}", fontWeight = FontWeight.Bold)
+                            Text("Reason: ${report.reason}", style = MaterialTheme.typography.bodySmall)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("\"${report.messageContent}\"", style = MaterialTheme.typography.bodyMedium)
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = { TennisRepository.resolveReport(report) },
+                                modifier = Modifier.testTag("remove_reported_message_${report.id}")
+                            ) {
+                                Icon(Icons.Default.DeleteForever, contentDescription = null)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Remove Message")
                             }
                         }
                     }
